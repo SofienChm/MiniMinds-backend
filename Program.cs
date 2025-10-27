@@ -14,25 +14,33 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 var connectionString = Environment.GetEnvironmentVariable("DATABASE_URL") ?? 
                       builder.Configuration.GetConnectionString("DefaultConnection");
-builder.Services.AddDbContext<ApplicationDbContext>(options =>
-{
-    options
-        .UseMySql(connectionString, ServerVersion.AutoDetect(connectionString))
-        .EnableSensitiveDataLogging()
-        .LogTo(Console.WriteLine, LogLevel.Information);
-});
 
-// Add Identity
-builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
+Console.WriteLine($"DATABASE_URL from environment: '{Environment.GetEnvironmentVariable("DATABASE_URL")}'");
+Console.WriteLine($"Final connection string: '{connectionString}'");
+
+// Only add database if connection string exists
+if (!string.IsNullOrEmpty(connectionString) && connectionString != "Server=localhost;Database=DaycareDB;User=root;Password=;")
 {
-    options.Password.RequireDigit = true;
-    options.Password.RequireLowercase = true;
-    options.Password.RequireUppercase = true;
-    options.Password.RequireNonAlphanumeric = false;
-    options.Password.RequiredLength = 6;
-})
-.AddEntityFrameworkStores<ApplicationDbContext>()
-.AddDefaultTokenProviders();
+    builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    {
+        options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString));
+    });
+}
+
+// Add Identity only if database is configured
+if (!string.IsNullOrEmpty(connectionString) && connectionString != "Server=localhost;Database=DaycareDB;User=root;Password=;")
+{
+    builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
+    {
+        options.Password.RequireDigit = true;
+        options.Password.RequireLowercase = true;
+        options.Password.RequireUppercase = true;
+        options.Password.RequireNonAlphanumeric = false;
+        options.Password.RequiredLength = 6;
+    })
+    .AddEntityFrameworkStores<ApplicationDbContext>()
+    .AddDefaultTokenProviders();
+}
 
 // Add JWT Authentication
 var jwtKey = builder.Configuration["Jwt:Key"];
@@ -99,8 +107,11 @@ builder.Services.AddSignalR();
 builder.Services.AddHttpClient<OpenAIService>();
 builder.Services.AddScoped<OpenAIService>();
 
-// Add Background Services
-builder.Services.AddHostedService<NotificationBackgroundService>();
+// Add Background Services only if database is configured
+if (!string.IsNullOrEmpty(connectionString) && connectionString != "Server=localhost;Database=DaycareDB;User=root;Password=;")
+{
+    builder.Services.AddHostedService<NotificationBackgroundService>();
+}
 
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
@@ -113,56 +124,63 @@ builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-// Seed the database
-using (var scope = app.Services.CreateScope())
+// Seed the database only if configured
+if (!string.IsNullOrEmpty(connectionString) && connectionString != "Server=localhost;Database=DaycareDB;User=root;Password=;")
 {
-    var services = scope.ServiceProvider;
     try
     {
-        var context = services.GetRequiredService<ApplicationDbContext>();
-        var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
-        var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
-
-        // Apply pending migrations
-        await context.Database.MigrateAsync();
-        Console.WriteLine("Database connection established.");
-
-        // Create roles if they don't exist
-        string[] roles = { "Admin", "Parent", "Teacher" };
-        foreach (string role in roles)
+        using (var scope = app.Services.CreateScope())
         {
-            if (!await roleManager.RoleExistsAsync(role))
+            var services = scope.ServiceProvider;
+            var context = services.GetRequiredService<ApplicationDbContext>();
+            var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
+            var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
+
+            // Apply pending migrations
+            await context.Database.MigrateAsync();
+            Console.WriteLine("Database connection established.");
+
+            // Create roles if they don't exist
+            string[] roles = { "Admin", "Parent", "Teacher" };
+            foreach (string role in roles)
             {
-                await roleManager.CreateAsync(new IdentityRole(role));
+                if (!await roleManager.RoleExistsAsync(role))
+                {
+                    await roleManager.CreateAsync(new IdentityRole(role));
+                }
             }
-        }
 
-        // Create default admin user if it doesn't exist
-        var adminEmail = "admin@daycare.com";
-        var adminUser = await userManager.FindByEmailAsync(adminEmail);
-        if (adminUser == null)
-        {
-            adminUser = new ApplicationUser
+            // Create default admin user if it doesn't exist
+            var adminEmail = "admin@daycare.com";
+            var adminUser = await userManager.FindByEmailAsync(adminEmail);
+            if (adminUser == null)
             {
-                UserName = adminEmail,
-                Email = adminEmail,
-                FirstName = "Admin",
-                LastName = "User",
-                EmailConfirmed = true
-            };
-            
-            var result = await userManager.CreateAsync(adminUser, "Admin@123");
-            if (result.Succeeded)
-            {
-                await userManager.AddToRoleAsync(adminUser, "Admin");
+                adminUser = new ApplicationUser
+                {
+                    UserName = adminEmail,
+                    Email = adminEmail,
+                    FirstName = "Admin",
+                    LastName = "User",
+                    EmailConfirmed = true
+                };
+                
+                var result = await userManager.CreateAsync(adminUser, "Admin@123");
+                if (result.Succeeded)
+                {
+                    await userManager.AddToRoleAsync(adminUser, "Admin");
+                }
             }
         }
     }
     catch (Exception ex)
     {
-        var logger = services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "An error occurred while seeding the database.");
+        Console.WriteLine($"Database seeding failed: {ex.Message}");
+        Console.WriteLine("App will continue without database seeding.");
     }
+}
+else
+{
+    Console.WriteLine("No database configured - running in API-only mode");
 }
 
 // Configure the HTTP request pipeline.
