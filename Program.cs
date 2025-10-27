@@ -180,6 +180,9 @@ app.UseAuthorization();
 
 app.MapControllers();
 
+// Add health check endpoint
+app.MapGet("/health", () => "API is running!");
+
 // Map SignalR hub
 app.MapHub<ChatHub>("/hubs/chat");
 
